@@ -1,147 +1,153 @@
 package pubsub
 
 import (
+	"encoding/json"
 	"fmt"
-	"github.com/micro/go-micro/util/log"
-
 	"github.com/gorilla/websocket"
-	"github.com/micro/go-micro/config"
+	"github.com/micro/go-log"
 )
 
-// PubSub struct
+const (
+	PUBLISH     = "publish"
+	SUBSCRIBE   = "subscribe"
+	UNSUBSCRIBE = "unsubscribe"
+)
+
 type PubSub struct {
 	Clients       []Client
 	Subscriptions []Subscription
 }
 
-// Client struct
 type Client struct {
-	ID         string
+	Id         string
 	Connection *websocket.Conn
 }
 
-// Request struct
-type Request struct {
-	Topic    string `json:"topic"`
-	Alias    string `json:"alias"`
-	Resource string `json:"resource"`
+type Message struct {
+	Message json.RawMessage `json:"message"`
 }
 
-// Subscription struct
 type Subscription struct {
-	Topic       string
-	BrokerTopic string
-	Client      *Client
+	Topic  string
+	Client *Client
 }
 
-// AddClient function
-func (ps *PubSub) AddClient(client Client) *PubSub {
+func (ps *PubSub) AddClient(client Client) (*PubSub) {
 
 	ps.Clients = append(ps.Clients, client)
 
+	payload := []byte("Hello Client ID:" +
+		client.Id)
+
+	log.Log("Socket: ", string(payload))
+
 	return ps
+
 }
 
-// RemoveClient function
-func (ps *PubSub) RemoveClient(client Client) *PubSub {
+func (ps *PubSub) RemoveClient(client Client) (*PubSub) {
 
-	// firstly, remove all subscriptions by this client
+	// first remove all subscriptions by this client
+
 	for index, sub := range ps.Subscriptions {
-		if client.ID == sub.Client.ID {
+
+		if client.Id == sub.Client.Id {
 			ps.Subscriptions = append(ps.Subscriptions[:index], ps.Subscriptions[index+1:]...)
 		}
 	}
 
 	// remove client from the list
+
 	for index, c := range ps.Clients {
-		if c.ID == client.ID {
+
+		if c.Id == client.Id {
 			ps.Clients = append(ps.Clients[:index], ps.Clients[index+1:]...)
 		}
+
 	}
 
 	return ps
 }
 
-func (ps *PubSub) getSubscriptions(topic string, client *Client) []Subscription {
+func (ps *PubSub) GetSubscriptions(topic string, client *Client) ([]Subscription) {
 
-	var ls []Subscription
+	var subscriptionList []Subscription
 
-	for _, sub := range ps.Subscriptions {
-		if topic == sub.Topic {
-			if client == nil || client != nil && sub.Client.ID == client.ID {
-				ls = append(ls, sub)
+	for _, subscription := range ps.Subscriptions {
+
+		if client != nil {
+
+			if subscription.Client.Id == client.Id && subscription.Topic == topic {
+				subscriptionList = append(subscriptionList, subscription)
+
+			}
+		} else {
+
+			if subscription.Topic == topic {
+				subscriptionList = append(subscriptionList, subscription)
 			}
 		}
 	}
 
-	return ls
+	return subscriptionList
 }
 
-func (ps *PubSub) subscribe(client *Client, topic string) *PubSub {
+func (ps *PubSub) Subscribe(client *Client, topic string) (*PubSub) {
 
-	cliSubs := ps.getSubscriptions(topic, client)
-	if len(cliSubs) > 0 {
-		// client subscribed the topic already
+	clientSubs := ps.GetSubscriptions(topic, client)
+
+	if len(clientSubs) > 0 {
+
+		// client is subscribed this topic before
+
 		return ps
 	}
 
-	sub := Subscription{
-		Topic:       topic,
-		BrokerTopic: topic,
-		Client:      client,
+	newSubscription := Subscription{
+		Topic:  topic,
+		Client: client,
 	}
-	ps.Subscriptions = append(ps.Subscriptions, sub)
+
+	ps.Subscriptions = append(ps.Subscriptions, newSubscription)
 
 	return ps
 }
 
-// Send function
-func (ps *PubSub) Send(topic string, rsp interface{}) []Subscription {
-	ls := ps.getSubscriptions(topic, nil)
-	for _, sub := range ls {
-		go sub.Client.Connection.WriteJSON(rsp)
+func (ps *PubSub) Publish(topic string, message interface{}, excludeClient *Client) {
+
+	subscriptions := ps.GetSubscriptions(topic, nil)
+
+	for _, sub := range subscriptions {
+		fmt.Printf("Sending to client id %s message is %s \n", sub.Client.Id, message)
+		sub.Client.Send(message)
 	}
 
-	return ls
 }
 
-// Unsubscribe function
-func (ps *PubSub) Unsubscribe(client *Client, topic string) *PubSub {
+func (client *Client) Send(message interface{}) (error) {
 
+	return client.Connection.WriteJSON(message)
+
+}
+
+func (ps *PubSub) Unsubscribe(client *Client, topic string) (*PubSub) {
+
+	//clientSubscriptions := ps.GetSubscriptions(topic, client)
 	for index, sub := range ps.Subscriptions {
-		if topic == sub.Topic && sub.Client.ID == client.ID {
-			// found this subscription from client and we need remove it
+
+		if sub.Client.Id == client.Id && sub.Topic == topic {
+			// found this subscription from client and we do need remove it
 			ps.Subscriptions = append(ps.Subscriptions[:index], ps.Subscriptions[index+1:]...)
 		}
 	}
 
 	return ps
+
 }
 
-// HandleReceiveMessage function
-func (ps *PubSub) HandleReceiveMessage(client Client, req *Request) *PubSub {
-	log.Info(req.Topic)
-	ps.subscribe(&client, req.Topic)
-
+func (ps *PubSub) HandleReceiveMessage(client Client) (*PubSub) {
+	topic := "sub-client-suprema"
+	ps.Subscribe(&client, topic)
+	fmt.Println("new subscriber to topic",topic, len(ps.Subscriptions), client.Id)
 	return ps
-}
-
-// IsSubscribed function
-func (ps *PubSub) IsSubscribed(topic string) bool {
-
-	for _, sub := range ps.Subscriptions {
-		if topic == sub.BrokerTopic {
-			return true
-		}
-	}
-
-	return false
-}
-
-// GenTopicName function
-func (req *Request) GenTopicName() {
-	req.Topic = fmt.Sprintf("%s.%s", config.Get("broker_topic").String(""), req.Alias)
-	if len(req.Resource) > 0 {
-		req.Topic += fmt.Sprintf(".%s", req.Resource)
-	}
 }

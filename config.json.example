@@ -1,4 +1,0 @@
-{
-    "log_level": 3,
-    "broker_topic": "brazn.topic.websocket-buildos"
-}
